@@ -1,13 +1,251 @@
 createdAt: "2020-01-18T10:17:31.970Z"
-updatedAt: "2020-01-18T10:17:39.571Z"
+updatedAt: "2020-03-22T12:22:16.402Z"
 type: "MARKDOWN_NOTE"
 folder: "d46437f1ddb58b8126d2"
-title: "test"
-tags: []
+title: "匿名内存读操作的缺页处理优化"
+tags: [
+  "performance"
+  "memory"
+  "pagefault"
+]
 content: '''
-  ### test
+  ## 匿名内存读操作的缺页处理优化
+  
+  ### 背景
+  可能大家脑海中都会有这样的意识：为了节省内存，应用程序申请内存时内核不会立刻分配物理内存并建立映射，而是采用按需分配（或叫延迟分配）的技术，即当程序真正访问某内存时再trap到内核中分配实际内存。
+  
+  大体上，上述理解是没问题的。但是，为了进一步达到节省内存的目的，Linux内核针对首次读操作又有特殊的优化。
+  
+  ### 优化思路
+  应用程序申请内存后（例如通过mmap），当第一次读取该块内存时，触发page fault，为其**以只读方式映射zero page**，而不是分配实际的、新的物理内存；直到未来的某个时刻，需要写该内存时，会再次触发page fault，此时再分配实际内存。
+  
+  ### 实现分析
+  
+  （基于Linux kernel 5.5、以4K页面映射为例）
+  
+  #### 第1次：读取操作
+  
+  x86的缺页异常处理入口如下：
+  ```
+  do_page_fault
+    __do_page_fault
+      do_user_addr_fault 
+  ```
+  如果引起缺页异常的是用户态地址，则会调用`do_user_addr_fault`处理。
+  如果触发此page fault的是写操作，则会带上`FAULT_FLAG_WRITE`标记：
+  ```
+  	if (hw_error_code & X86_PF_WRITE)
+  		flags |= FAULT_FLAG_WRITE;
+  ```
+  我们讨论的是读操作场景，所以**flags中不会设置`FAULT_FLAG_WRITE`标记**。
+  
+  继续跟踪calltrace：
+  ```
+  do_user_addr_fault
+    handle_mm_fault
+      __handle_mm_fault
+  ```
+  前面传入的`flags`将作为`struct vm_fault vmf`的一部分继续传递：
+  ```
+  __handle_mm_fault:
+    struct vm_fault vmf = {
+  	  .vma = vma,
+  	  .address = address & PAGE_MASK,
+  	  .flags = flags,
+  	  .pgoff = linear_page_index(vma, address),
+  	  .gfp_mask = __get_fault_gfp_mask(vma),
+    };
+    ...
+    handle_pte_fault(&vmf);
+  ```
+  
+  我们应用程序此前还没有访问该地址，所以该地址对应的pte应该是空的：
+  ```
+  handle_pte_fault:
+    if (!vmf->pte) {
+  	  if (vma_is_anonymous(vmf->vma))
+  		  return do_anonymous_page(vmf); <-- 走此分支
+  	  else
+  		  return do_fault(vmf);
+    }
+  ```
+  我们分析的匿名内存场景，故会调用`do_anonymous_page`继续处理。
+  
+  ```
+  do_anonymous_page:
+      /* Use the zero-page for reads */
+      if (!(vmf->flags & FAULT_FLAG_WRITE) &&
+          !mm_forbids_zeropage(vma->vm_mm)) {
+          entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address),
+                vma->vm_page_prot));
+          vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
+                vmf->address, &vmf->ptl);
+          ...
+    		  goto setpte;
+    	}
+      ...
+    setpte:
+      set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+  ```
+  终于见到庐山真面目了，前面我们强调过了：`flags`是没有设置`FAULT_FLAG_WRITE`标记的，故会使用zero-page来建立映射。可以看到，最终填入页表的`entry`是基于zero-page（`my_zero_pfn`）的。
+  
+  **重点又来了**：要注意设置的`entry`中的属性是**没有写权限**的。权限`vma->vm_page_prot`的来源，我们放到最后分析。
+  
+  #### 第2-N次：读取操作
+  我们已经将地址映射到zero-page了，所以后续的读操作便不会引起缺页异常了。
+  
+  #### 第N+1次：写入操作
+  因为前面建立的是**只读权限**的映射，故当遇到第一个写入操作时，会再次触发缺页异常，此时会经历与前述calltrace略有不同的分支路径。
+  ```
+  handle_pte_fault:
+    if (vmf->flags & FAULT_FLAG_WRITE) {
+      if (!pte_write(entry))
+        return do_wp_page(vmf);
+      ...
+    }
+  ```
+  将会调用`do_wp_page`来继续处理：
+  ```
+  do_wp_page:
+    vmf->page = vm_normal_page(vma, vmf->address, vmf->orig_pte);
+    if (!vmf->page) {
+      ...
+      return wp_page_copy(vmf);
+    }
+  ```
+  `vm_normal_page`作用是获取指定pte所映射页面的`struct page`对象，而对于zero-page来说，它会返回`NULL`，所以此处会调用`wp_page_copy`继续处理：
+  ```
+  wp_page_copy:
+    if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
+      new_page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+    }
+    ...
+    if (likely(pte_same(*vmf->pte, vmf->orig_pte))) {
+      ...
+      entry = mk_pte(new_page, vma->vm_page_prot);
+      entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+      ...
+      set_pte_at_notify(mm, vmf->address, vmf->pte, entry);
+    }
+  ```
+  针对我们的场景，`wp_page_copy`中，会首先分配实际的物理页面`new_page`，然后据此更新对应pte表项`entry`。注意`maybe_mkwrite`，当`vma`具备写权限时，它会为`entry`置上可写权限。
+  
+  自此之后，当程序再次访问（包括读和写）此页面时，均不会再引起page fault，而且访问到的将是非zero-page的物理内存。
+  
+  
+  #### 设置vm_page_prot
+  还有个遗留任务，我们需要看看`vma->vm_page_prot`的设置过程。
+  
+  应用程序通过mmap之类的系统调用申请内存空间时，往往需要指定该空间的权限，例如：
+  ```
+         void *mmap(void *addr, size_t length, int prot, int flags,
+                    int fd, off_t offset);
+             
+         The prot argument describes the desired memory protection of the
+         mapping (and must not conflict with the open mode of the file).  It
+         is either PROT_NONE or the bitwise OR of one or more of the following
+         flags:
+  
+         PROT_EXEC  Pages may be executed.
+  
+         PROT_READ  Pages may be read.
+  
+         PROT_WRITE Pages may be written.
+  
+         PROT_NONE  Pages may not be accessed.
+  ```
+  
+  一般情况下，我们都会带上`PROT_WRITE`。内核中实现mmap系统调用的calltrace会调用到`do_mmap`函数，其中可以看到如下片段：
+  ```
+  	vm_flags |= calc_vm_prot_bits(prot, pkey) | calc_vm_flag_bits(flags) |
+  			mm->def_flags | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC;
+  ```
+  而`calc_vm_prot_bits`实现如下：
+  ```
+  /*
+   * Combine the mmap "prot" argument into "vm_flags" used internally.
+   */
+  static inline unsigned long
+  calc_vm_prot_bits(unsigned long prot, unsigned long pkey)
+  {
+  	return _calc_vm_trans(prot, PROT_READ,  VM_READ ) |
+  	       _calc_vm_trans(prot, PROT_WRITE, VM_WRITE) |
+  	       _calc_vm_trans(prot, PROT_EXEC,  VM_EXEC) |
+  	       arch_calc_vm_prot_bits(prot, pkey);
+  }
+  ```
+  也就是说，系统调用传入的`prot`会转换成表示VMA属性的`VM_xxx`标志。一般情况下，应用程序申请的内存是可读可写的，即会传入`PROT_READ`和`PROT_WRITE`，那么最终VMA属性中将有`VM_READ`和`VM_WRITE`。好，后面我们就按此场景继续分析。
+  ```
+  do_mmap
+    mmap_region
+      vma->vm_page_prot = vm_get_page_prot(vm_flags);
+  ```
+  哈哈，我们已经看到`vma->vm_page_prot`的赋值语句了，马上要大结局了。
+  ```
+  pgprot_t vm_get_page_prot(unsigned long vm_flags)
+  {
+  	pgprot_t ret = __pgprot(pgprot_val(protection_map[vm_flags &
+  				(VM_READ|VM_WRITE|VM_EXEC|VM_SHARED)]) |
+  			pgprot_val(arch_vm_get_page_prot(vm_flags)));
+  
+  	return arch_filter_pgprot(ret);
+  }
+  EXPORT_SYMBOL(vm_get_page_prot);
+  ```
+  看来这里的重点就是`protection_map`数组了，它通过VMA的部分属性作为索引，输出该VMA所对应的`pgprot_t`类型的属性。在分析此数组前，我们或许会有个疑问：**`vm_page_prot`和`vm_flags`都表示内存相关的属性，那么有啥不一样??!!** 此处我们直接引用网上一个回答片段：
+  ```
+  vm_page_prot's type is pgprot_t, which is a arch level data type, meaning it can be 
+  applied directly to the PTEs of the underlying architecture. On x86 32-bit, this field 
+  stores the content of the proper protection bits for the PTEs of the VMA. vm_flags, on the 
+  contrary, is an arch-independent field, whose bits are defined in linux/mm.h. There are 
+  numerous  VM_* bits, and they extend heavily over just the simple flags of READ, WRITE, and EXEC.
+  ```
+  言归正传，看下`protection_map`数组的实现：
+  ```
+  /* description of effects of mapping type and prot in current implementation.
+   * this is due to the limited x86 page protection hardware.  The expected
+   * behavior is in parens:
+   *
+   * map_type	prot
+   *		          PROT_NONE	PROT_READ	PROT_WRITE	PROT_EXEC
+   * MAP_SHARED	r: (no) no	r: (yes) yes  r: (no) yes   r: (no) yes
+   *		        w: (no) no	w: (no) no	  w: (yes) yes  w: (no) no
+   *		        x: (no) no	x: (no) yes	  x: (no) yes   x: (yes) yes
+   *
+   * MAP_PRIVATE  r: (no) no	r: (yes) yes  r: (no) yes     r: (no) yes
+   *              w: (no) no	w: (no) no    w: (copy) copy  w: (no) no
+   *              x: (no) no	x: (no) yes   x: (no) yes     x: (yes) yes
+   */
+  pgprot_t protection_map[16] __ro_after_init = {
+  	__P000, __P001, __P010, __P011, __P100, __P101, __P110, __P111,
+  	__S000, __S001, __S010, __S011, __S100, __S101, __S110, __S111
+  };
+  ```
+  VMA可以分为Private和Shared两种，我们以Private为例。数组元素是用宏表示的，结合相关VMA属性的定义：
+  ```
+  #define VM_READ		0x00000001	/* currently active flags */
+  #define VM_WRITE	0x00000002
+  #define VM_EXEC		0x00000004
+  #define VM_SHARED	0x00000008
+  ```
+  我们可以得到数组元素的宏的命名规律：第一个字母表示Private/Shared，接着分别是EXEC、WRITE、READ权限。
+  我们要分析的场景，属性组合为：Private、WRITE、READ，即`__P011`：
+  ```
+  #define __P011	PAGE_COPY
+  
+  #define PAGE_COPY		PAGE_COPY_NOEXEC
+  
+  #define PAGE_COPY_NOEXEC	__pgprot(_PAGE_PRESENT | _PAGE_USER |	\\
+  					 _PAGE_ACCESSED | _PAGE_NX)
+  ```
+  最终，我们看到`__P011`含`_PAGE_PRESENT`但不含`_PAGE_RW`，所以是**只读**的。
+  
+  \\- End \\- 
+  
   
 '''
-linesHighlighted: []
+linesHighlighted: [
+  64
+]
 isStarred: false
 isTrashed: false
