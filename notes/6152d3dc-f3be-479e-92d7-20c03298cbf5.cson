@@ -1,0 +1,50 @@
+createdAt: "2020-04-13T13:21:42.991Z"
+updatedAt: "2020-04-13T14:16:18.575Z"
+type: "MARKDOWN_NOTE"
+folder: "d46437f1ddb58b8126d2"
+title: "kvm热迁移优化 之 clear_dirty_log机制"
+tags: []
+content: '''
+  ## kvm热迁移优化 之 clear_dirty_log机制
+  
+  ### 背景
+  部门中有同事在进行热迁移性能优化的工作，从而获知kvm社区对热迁移脏页跟踪有几个很赞的优化，求知欲迫使我必须对其进行一番学习研究，即使不能掌握每个细节，也得吸收其精华！
+  
+  按照社区合入的先后顺序，此处我先选择了`kvm: introduce manual dirty log reprotect`(commit `2a31b9db153530df4aa02dac8c32837bf5f47019`)来进行分析。
+  
+  ### 要解决的问题
+  该patch是kvm maintainer Paolo的作品，大师的patch就是一样，光commit message就可以让人看得如痴如醉，其言简意赅的描述了想要解决的问题：
+  ```
+  There are two problems with KVM_GET_DIRTY_LOG.  First, and less important,
+  it can take kvm->mmu_lock for an extended period of time.  Second, its user
+  can actually see many false positives in some cases.  The latter is due
+  to a benign race like this:
+  
+    1. KVM_GET_DIRTY_LOG returns a set of dirty pages and write protects
+       them.
+    2. The guest modifies the pages, causing them to be marked ditry.
+    3. Userspace actually copies the pages.
+    4. KVM_GET_DIRTY_LOG returns those pages as dirty again, even though
+       they were not written to since (3).
+  
+  This is especially a problem for large guests, where the time between
+  (1) and (3) can be substantial. 
+  ```
+  
+  **为了证明我看懂了，下面用自己的言语来解释一下**...
+  此前KVM_GET_DIRTY_LOG的核心流程是：
+  Step1. 暂存当前的脏页信息，并将kvm脏页位图清零
+  Step2. 重新为虚拟机内存开启脏页跟踪能力
+  Step3. 将该轮（暂存的）信息copy给userspace(例如QEMU)
+  
+  这样便潜在两个问题：
+  一、 Step1 & Step2 是在持有kvm->mmu_lock的情况下进行的，所以持锁时间和要处理的memory_slot内存大小是正相关的。如果slot内存较大，那么持锁时间也会较长。
+  二、 QEMU从Step3中获得脏页位图后，根据其内容来将对应脏页发送给目的端，那么有概率出现：脏页A在此期间又被修改，（因为Step2）下一轮脏页位图中也将记录它，导致页面A被重复发送。
+  
+  ### 解决方案
+  
+  
+'''
+linesHighlighted: []
+isStarred: false
+isTrashed: false
