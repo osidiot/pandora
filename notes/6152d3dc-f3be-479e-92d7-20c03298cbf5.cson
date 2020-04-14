@@ -1,5 +1,5 @@
 createdAt: "2020-04-13T13:21:42.991Z"
-updatedAt: "2020-04-13T14:16:18.575Z"
+updatedAt: "2020-04-14T14:22:19.738Z"
 type: "MARKDOWN_NOTE"
 folder: "d46437f1ddb58b8126d2"
 title: "kvm热迁移优化 之 clear_dirty_log机制"
@@ -12,7 +12,7 @@ content: '''
   
   按照社区合入的先后顺序，此处我先选择了`kvm: introduce manual dirty log reprotect`(commit `2a31b9db153530df4aa02dac8c32837bf5f47019`)来进行分析。
   
-  ### 要解决的问题
+  ### 问题描述
   该patch是kvm maintainer Paolo的作品，大师的patch就是一样，光commit message就可以让人看得如痴如醉，其言简意赅的描述了想要解决的问题：
   ```
   There are two problems with KVM_GET_DIRTY_LOG.  First, and less important,
@@ -35,13 +35,147 @@ content: '''
   此前KVM_GET_DIRTY_LOG的核心流程是：
   Step1. 暂存当前的脏页信息，并将kvm脏页位图清零
   Step2. 重新为虚拟机内存开启脏页跟踪能力
-  Step3. 将该轮（暂存的）信息copy给userspace(例如QEMU)
+  Step3. 将该轮（暂存的）脏页信息copy给userspace(例如QEMU)
   
   这样便潜在两个问题：
   一、 Step1 & Step2 是在持有kvm->mmu_lock的情况下进行的，所以持锁时间和要处理的memory_slot内存大小是正相关的。如果slot内存较大，那么持锁时间也会较长。
-  二、 QEMU从Step3中获得脏页位图后，根据其内容来将对应脏页发送给目的端，那么有概率出现：脏页A在此期间又被修改，（因为Step2）下一轮脏页位图中也将记录它，导致页面A被重复发送。
+  二、 QEMU从Step3中获得脏页位图后，根据其内容来将对应脏页发送给目的端，那么有概率出现：在拷贝脏页前，脏页A又被修改，（因为Step2）下一轮脏页位图中也将记录它，导致页面A被重复发送。而这种情况下页面A实际只需要发送1次即可。
   
   ### 解决方案
+  ```
+  This patch introduces a new
+  capability which, when enabled, makes KVM_GET_DIRTY_LOG not
+  write-protect the pages it returns.  Instead, userspace has to
+  explicitly clear the dirty log bits just before using the content
+  of the page.  The new KVM_CLEAR_DIRTY_LOG ioctl can operate on a
+  64-page granularity rather than requiring to sync a full memslot.
+  This way the mmu_lock is taken for small amounts of time, and
+  only a small amount of time will pass between write protection
+  of pages and the sending of their content.
+  ```
+  引入一种新的能力，在此能力下：
+  1. KVM_GET_DIRTY_LOG **不再** 重新开启脏页跟踪能力。
+  2. 添加一个新的ioctl接口 KVM_CLEAR_DIRTY_LOG ，它可以按照64-page粒度来开启脏页跟踪（即一次调用只处理连续的64个page，而不用像之前那样一次必须处理memory_slot中所有page），这能缓解kvm->mmu_lock潜在持锁较久的问题。
+  3. QEMU需要先调用KVM_CLEAR_DIRTY_LOG将该脏页所属64-page range开启脏页跟踪能力，然后再发送脏页。
+  
+  
+  我通过示意图来说明该方法为何能解决问题。
+  首先是问题场景：
+  ```
+        Guest Guest Guest     Guest
+        write write write     write
+        pageC pageB pageA     pageA
+         +     +     +         +
+         |     |     |         |
+         v     v     v         v
+  +---+--+-----+-----+----+----+-----^---------------+--------^-------------
+      ^                   ^          |               ^        |
+      |                   |          |               |        |
+      +                   +          +--+(Send ABC)  +        +----+(Send A)
+  LOG_START          GET_DIRTY_LOG              GET_DIRTY_LOG
+                     1.get dirty bmap(ABC)      1.get dirty bmap(A)
+                     2. re-enable dirty log     2. re-enable dirty log
+  ```
+  可以看到第二轮迭代时，发送page A实际上是冗余的。那么采用解决方案后，流程是什么样的呢？请看:
+  ```
+        Guest Guest Guest     Guest
+        write write write     write
+        pageC pageB pageA     pageA
+         +     +     +         +
+         |     |     |         |
+         v     v     v         v
+  +---+--+-----+-----+----+----+----------+--^-----------------
+      ^                   ^               ^  |
+      |                   |               |  +------+(Send ABC)
+      +                   +               +
+  LOG_START          GET_DIRTY_LOG     CLEAR_DIRTY_LOG
+                     1.get dirty bmap  1.re-enable dirty log
+  ```
+  很明显，优化后页面A不会再被重复发送了。**当然，理论上在CLEAR_DIRTY_LOG与发送之间页面A依然有可能被修改、标脏进而下轮重复发送，但此概率已经较低了。**
+  
+  ### 实现分析
+  （内核基于upstream 5.5版本）
+  首先，为了能够兼容老QEMU，kvm中并没有将上述优化写死，而是通过capability方式来供QEMU自由选择是否采用新能力（当然老QEMU无法采用）。
+  ```
+  kvm_vm_ioctl_enable_cap_generic:
+  	case KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2:
+  		if (cap->flags || (cap->args[0] & ~1))
+  			return -EINVAL;
+  		kvm->manual_dirty_log_protect = cap->args[0];
+  ```
+  
+  接着，看下KVM_GET_DIRTY_LOG流程的变化：
+  ```
+  kvm_vm_ioctl_get_dirty_log:
+  	r = kvm_get_dirty_log_protect(kvm, log, &flush);
+  
+  kvm_get_dirty_log_protect:
+  	if (kvm->manual_dirty_log_protect) {
+  		dirty_bitmap_buffer = dirty_bitmap;
+  	} else {
+  		dirty_bitmap_buffer = kvm_second_dirty_bitmap(memslot);
+  		memset(dirty_bitmap_buffer, 0, n);
+  
+  		spin_lock(&kvm->mmu_lock);
+  		for (i = 0; i < n / sizeof(long); i++) {
+  			unsigned long mask;
+  			gfn_t offset;
+  
+  			if (!dirty_bitmap[i])
+  				continue;
+  
+  			*flush = true;
+  			mask = xchg(&dirty_bitmap[i], 0);
+  			dirty_bitmap_buffer[i] = mask;
+  
+  			offset = i * BITS_PER_LONG;
+  			kvm_arch_mmu_enable_log_dirty_pt_masked(kvm, memslot,
+  								offset, mask);
+  		}
+  		spin_unlock(&kvm->mmu_lock);
+  	}
+  
+  	if (copy_to_user(log->dirty_bitmap, dirty_bitmap_buffer, n))
+  		return -EFAULT;
+  ```
+  当开启 MANUAL_DIRTY_LOG_PROTECT2 能力后，走`Line 5-6`分支，最后通过`Line 30`将kvm内核中记录的脏页位图copy给QEMU。
+  
+  【 当然，为了确认Paolo分析问题时没有吹牛，顺便也看一下**原始KVM_GET_DIRTY_LOG**流程`Line 8-27`。kvm在创建脏页位图时多申请了一倍空间作为向QEMU copy数据的buffer，也就是`Line 8`通过`kvm_second_dirty_bitmap`获取到的。`Line 11-27`负责将脏页位图copy到buffer中，并且将脏页位图清零然后再次开启标脏。最后通过`Line 30`将脏页位图copy给QEMU 】
+  
+  最后，看下KVM_CLEAR_DIRTY_LOG流程的实现：
+  ```
+  kvm_vm_ioctl_clear_dirty_log:
+  	r = kvm_clear_dirty_log_protect(kvm, log, &flush);
+  
+  kvm_clear_dirty_log_protect:
+  	spin_lock(&kvm->mmu_lock);
+  	for (offset = log->first_page, i = offset / BITS_PER_LONG,
+  		 n = DIV_ROUND_UP(log->num_pages, BITS_PER_LONG); n--;
+  	     i++, offset += BITS_PER_LONG) {
+  		unsigned long mask = *dirty_bitmap_buffer++;
+  		atomic_long_t *p = (atomic_long_t *) &dirty_bitmap[i];
+  		if (!mask)
+  			continue;
+  
+  		mask &= atomic_long_fetch_andnot(mask, p);
+  
+  		/*
+  		 * mask contains the bits that really have been cleared.  This
+  		 * never includes any bits beyond the length of the memslot (if
+  		 * the length is not aligned to 64 pages), therefore it is not
+  		 * a problem if userspace sets them in log->dirty_bitmap.
+  		 */
+  		if (mask) {
+  			*flush = true;
+  			kvm_arch_mmu_enable_log_dirty_pt_masked(kvm, memslot,
+  								offset, mask);
+  		}
+  	}
+  	spin_unlock(&kvm->mmu_lock);
+  ```
+  `log`中记录了本次ioctl需要处理的page范围；
+  `dirty_bitmap_buffer`表示QEMU本轮迭代拷贝将要发送的脏页的位图；
+  `Line 6-26`的作用是：将QEMU将要拷贝的页面从kvm脏页位图中清理掉，然后重新开启对这些页面的脏页跟踪能力。
   
   
 '''
