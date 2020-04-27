@@ -1,0 +1,114 @@
+createdAt: "2020-04-26T13:58:18.393Z"
+updatedAt: "2020-04-27T13:51:52.581Z"
+type: "MARKDOWN_NOTE"
+folder: "d46437f1ddb58b8126d2"
+title: "kvm热迁移优化 之 gradually dirty log 机制"
+tags: []
+content: '''
+  ## kvm热迁移优化 之 gradually dirty log 机制
+  
+  ### 背景
+  前面分析过《kvm热迁移优化 之 clear_dirty_log机制》，基于该成果，社区进一步对开启标脏功能做了优化。
+  此篇我们分析`KVM: x86: enable dirty log gradually in small chunks`（commit `3c9bd4006bfc2dccda1823db61b3f470ef91cfaa`）。
+  
+  ### 问题描述
+  开启标脏时会依次将每个EPT映射设置为write-protect或清理dirty bit（支持PML的情况），对于内存较大的虚拟机来说，该操作是比较耗时的。本篇分析一种优化方案，能够明显的解决此问题，先贴一下patch中的测试数据：
+  ```
+  Under the Intel(R) Xeon(R) Gold 6152 CPU @ 2.10GHz environment,
+  I did some tests with a 128G windows VM and counted the time taken
+  of memory_global_dirty_log_start, here is the numbers:
+  
+  VM Size        Before    After optimization
+  128G           460ms     10ms
+  ```
+  
+  ### 解决方案
+  解决方式是充分结合了下面两个特点：
+  1. **QEMU的脏页位图在标脏前会全部初始化成1**，这样便能够保证第一次每个页面都能够拷贝到目的端（即**全量拷贝**），后续只需拷贝脏页（即**迭代拷贝**）。
+  
+  2. 前面分析的`clear_dirty_log机制`在 GET_DIRTY_LOG 时候不重新开启脏页跟踪，而是当QEMU在发送页面前主动调用 CLEAR_DIRTY_LOG 来对一定范围内的page重新开启脏页跟踪能力。
+  
+  根据**特点1**来看，第一次开启标脏实际上是没啥用处的，为啥？ 因为QEMU脏页位图全部初始化成1，故一轮kvm产生的脏页信息没有实际作用（kvm脏页位图最终会`或`到QEMU脏页位图中）。
+  根据**特点2**来看，每次拷贝页面之前会重新对一定范围内的page开启标脏，所以不会再出现需要一次对所有page开启标脏的耗时操作，而是化整为零了。
+  
+  所以，一种很不错的解决方案诞生了：**热迁移（第一次）开启标脏时不再进行脏页跟踪的使能，而是仅仅将kvm维护的脏页位图也全部置1**。（当前实现中，大页依然会在第一次开启标脏，但原理上也是可以省去的，arm中已经实现）
+  
+  下面分析下关键代码：
+  ```
+  #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \\
+                                          KVM_DIRTY_LOG_INITIALLY_SET)
+  
+  kvm_vm_ioctl_enable_cap_generic:
+          case KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2: {
+                  u64 allowed_options = KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE;
+  
+                  if (cap->args[0] & KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE)
+                          allowed_options = KVM_DIRTY_LOG_MANUAL_CAPS;
+  
+                  if (cap->flags || (cap->args[0] & ~allowed_options))
+                          return -EINVAL;
+                  kvm->manual_dirty_log_protect = cap->args[0];
+                  return 0;
+          }
+  
+  
+  static inline bool kvm_dirty_log_manual_protect_and_init_set(struct kvm *kvm)
+  {
+          return !!(kvm->manual_dirty_log_protect & KVM_DIRTY_LOG_INITIALLY_SET);
+  }
+  ```
+  首先是引入了一个`KVM_DIRTY_LOG_INITIALLY_SET`的cap，需要QEMU使能。
+  
+  ```
+  kvm_vm_ioctl_set_memory_region
+    kvm_set_memory_region
+      __kvm_set_memory_region
+        if (kvm_dirty_log_manual_protect_and_init_set(kvm))
+          bitmap_set(new.dirty_bitmap, 0, new.npages);
+        kvm_set_memslot
+          kvm_arch_commit_memory_region
+            kvm_mmu_slot_apply_flags
+  ```
+  上面是开启标脏的调用栈，可以看到：当使能了`init_set`时会将kvm脏页位图内容全置1。
+  `kvm_mmu_slot_apply_flags`是非常关键的函数：
+  ```
+          if (new->flags & KVM_MEM_LOG_DIRTY_PAGES) {
+                  if (kvm_x86_ops.slot_enable_log_dirty) {
+                          kvm_x86_ops.slot_enable_log_dirty(kvm, new);
+                  } else {
+                          int level =
+                                  kvm_dirty_log_manual_protect_and_init_set(kvm) ?
+                                  PT_DIRECTORY_LEVEL : PT_PAGE_TABLE_LEVEL;
+  
+                          /*
+                           * If we're with initial-all-set, we don't need
+                           * to write protect any small page because
+                           * they're reported as dirty already.  However
+                           * we still need to write-protect huge pages
+                           * so that the page split can happen lazily on
+                           * the first write to the huge page.
+                           */
+                          kvm_mmu_slot_remove_write_access(kvm, new, level);
+                  }
+  
+  
+  .slot_enable_log_dirty = vmx_slot_enable_log_dirty,
+  
+  static void vmx_slot_enable_log_dirty(struct kvm *kvm,
+                                       struct kvm_memory_slot *slot)
+  {
+          if (!kvm_dirty_log_manual_protect_and_init_set(kvm))
+                  kvm_mmu_slot_leaf_clear_dirty(kvm, slot);
+          kvm_mmu_slot_largepage_remove_write_access(kvm, slot);
+  }
+  
+  ```
+  可以看到，在使能`init_set`情况下，不会对4K映射进行write-protect或清理dirty bit操作，但是对大页映射依然会去做。
+  另外，上面同时支持PML（`slot_enable_log_dirty`有值、不为NULL）和non-PML两种模式。
+  
+  后续，当需要拷贝页面时，通过 CLEAR_DIRTY_LOG 机制来逐步（一段一段地）来对内存开启脏页追踪。
+  **此方案的缺陷：**我们版本自研的getdirtyrate命令，支持通过 dirty_log方式 或者 MD5采样方式 来评估虚拟机当前的脏页速率，那么 dirty_log方式 在此方案下第一轮便不准确了，因为第一轮返回的脏页位图内容全为1。
+'''
+linesHighlighted: []
+isStarred: false
+isTrashed: false
