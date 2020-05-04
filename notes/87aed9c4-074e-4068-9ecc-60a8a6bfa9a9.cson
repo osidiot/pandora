@@ -1,0 +1,101 @@
+createdAt: "2020-05-04T08:18:29.503Z"
+updatedAt: "2020-05-04T13:53:58.185Z"
+type: "MARKDOWN_NOTE"
+folder: "d46437f1ddb58b8126d2"
+title: "linux实时调度分析"
+tags: []
+content: '''
+  ## linux实时调度分析
+  
+  ### 实时进程优先级
+  ```
+  /*
+   * Priority of a process goes from 0..MAX_PRIO-1, valid RT
+   * priority is 0..MAX_RT_PRIO-1, and SCHED_NORMAL/SCHED_BATCH
+   * tasks are in the range MAX_RT_PRIO..MAX_PRIO-1. Priority
+   * values are inverted: lower p->prio value means higher priority.
+   *
+   * The MAX_USER_RT_PRIO value allows the actual maximum
+   * RT priority to be separate from the value exported to
+   * user-space.  This allows kernel threads to set their
+   * priority to a value higher than any user task. Note:
+   * MAX_RT_PRIO must not be smaller than MAX_USER_RT_PRIO.
+   */
+  
+  #define MAX_USER_RT_PRIO        100
+  #define MAX_RT_PRIO             MAX_USER_RT_PRIO
+  
+  #define MAX_PRIO                (MAX_RT_PRIO + NICE_WIDTH)
+  #define DEFAULT_PRIO            (MAX_RT_PRIO + NICE_WIDTH / 2)
+  ```
+  根据上述代码可知：Linux系统中实时进程的优先级是`0...99`，并且`数值越低，实际优先级越高`。
+  
+  系统中还有一个`cpuri`，在实时进程调度中有用：
+  ```
+  #define CPUPRI_NR_PRIORITIES    (MAX_RT_PRIO + 2)
+  
+  #define CPUPRI_INVALID          -1
+  #define CPUPRI_IDLE              0
+  #define CPUPRI_NORMAL            1
+  /* values 2-101 are RT priorities 0-99 */
+  ```
+  cpuri总共有102个有效值（-1是invalid的），RT优先级0...99对应cpuri的2...101。
+  
+  
+  ### 关键数据结构
+  
+  ![RT关键数据结构关系](:storage/rt.png)
+  
+  ####  struct sched_rt_entity
+  ```
+  struct sched_rt_entity {                                
+          struct list_head                run_list;       
+          unsigned long                   timeout;        
+          unsigned long                   watchdog_stamp; 
+          unsigned int                    time_slice;     
+          unsigned short                  on_rq;          
+          unsigned short                  on_list;        
+                                                          
+          struct sched_rt_entity          *back;          
+  #ifdef CONFIG_RT_GROUP_SCHED                            
+          struct sched_rt_entity          *parent;        
+          /* rq on which this entity is (to be) queued: */
+          struct rt_rq                    *rt_rq;         
+          /* rq "owned" by this entity/group: */          
+          struct rt_rq                    *my_q;          
+  #endif                                                  
+  } __randomize_layout;                                   
+  ```
+  每个rt_rq（除root rt_rq之外）都对应、每个task_struct中都含有一个此结构体，用于记录RT相关的信息。
+  ##### run_list
+  链表结点，用来链接到此RT entity的优先级所对应的优先级链表中。
+  每个RT entity应该是隶属于某一个rt_rq的，而每个rt_rq都含有一套优先级链表`active.queue`,每个激活的RT entity都应该通过`run_list`链接到对应的链表上。
+  
+  
+  
+  
+  ##### timeout
+  
+  ##### watchdog_stamp
+  
+  ##### time_slice
+  
+  ##### on_rq
+  
+  ##### on_list
+  
+  ##### back
+  
+  ##### parent
+  
+  ##### rt_rq
+  
+  ##### my_q
+  
+  
+  
+  ### 创建实时进程
+'''
+linesHighlighted: []
+isStarred: false
+isTrashed: false
