@@ -1,0 +1,76 @@
+" ================================================================================
+" Author: Longpeng(Mike)
+"
+" HotKey:
+"   F4: update tags
+"   F5: update cscope
+"   Space + w + w: display ALL windows (except file explore, currently only taglist)
+"   Space + w + e: display file explore
+"   Space + c + w: open quickfix window
+"   Space + c + n: next item in quickfix
+"   Space + c + p: prev item in quickfix
+"   Space + f + s/g/c/t/e/f/i/d: cs find s/g/c/t/e/f/i/d
+" ================================================================================
+
+" High light cursor col & line
+set cursorcolumn
+set cursorline
+
+"
+" ctags cmd:
+"     ctags -R --c++-kinds=+ps
+"
+set tags=tags
+set tags+=./tags
+
+" Taglist
+let Tlist_Ctags_Cmd = '/usr/bin/ctags'
+let Tlist_Exit_OnlyWindow=1
+"let Tlist_Auto_Open=1
+let Tlist_Use_Right_Window=1
+
+nmap <F4> :!ctags -R --c++-kinds=+p --fields=+iaS --extra=+q .<CR><CR> :TlistUpdate<CR>
+
+
+" cscope cmd:
+"     find . -name "*.[c|h]" > cscope.files
+"     cscope -bkq -i cscope.files
+"
+if filereadable("cscope.out")
+  cs kill -1
+  cs add cscope.out
+endif
+
+nmap <F5> :!find . -iname '*.c' -o -iname '*.s' -o -iname '*.h' -o -iname '*.S' > cscope.files ;<CR>
+  \:!cscope -b -i cscope.files -f cscope.out<CR>
+  \:cs kill -1<CR>:cs add cscope.out<CR>
+
+nmap <Space>fs :cs find s <C-R>=expand("<cword>")<cr><cr>
+nmap <Space>fg :cs find g <C-R>=expand("<cword>")<cr><cr>
+nmap <Space>fc :cs find c <C-R>=expand("<cword>")<cr><cr>
+nmap <Space>ft :cs find t <C-R>=expand("<cword>")<cr><cr>
+nmap <Space>fe :cs find e <C-R>=expand("<cword>")<cr><cr>
+nmap <Space>ff :cs find f <C-R>=expand("<cfile>")<cr><cr>
+nmap <Space>fi :cs find i <C-R>=expand("<cfile>")<cr><cr>
+nmap <Space>fd :cs find d <C-R>=expand("<cword>")<cr><cr>
+
+set cscopequickfix=s-,c-,d-,i-,t-,e-
+" open quickfix window in bottom
+nmap <Space>cw :bo cw<CR><CR>
+nmap <Space>cn :cn<CR><CR>
+nmap <Space>cp :cp<CR><CR>
+
+" netrw
+" hide netrw top message
+let g:netrw_banner=0
+let g:netrw_liststyle=3
+let g:netrw_chgwin=2
+let g:netrw_winsize = 20
+nmap <Space>ww :Tlist<CR>
+nmap <Space>we :Sexplore!<CR>
+
+"" NerdTree
+"let NERDTreeWinPos="right"
+"let NERDTreeShowBookmarks=1
+"autocmd VimEnter * NERDTree
+
