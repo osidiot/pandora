@@ -1,0 +1,53 @@
+createdAt: "2021-03-07T06:51:04.354Z"
+updatedAt: "2021-03-07T14:37:49.201Z"
+type: "MARKDOWN_NOTE"
+folder: "d46437f1ddb58b8126d2"
+title: "内核Rmap分析——rmap建立过程"
+tags: []
+content: '''
+  ## 内核Rmap分析——rmap建立过程
+  
+  rmap最基本、最重要的作用是能够快速定位到某个物理页面被哪些VMA映射了。
+  **anon_vma**：缩写成**AV**
+  **anon_vma_chain**：缩写成**AVC**
+  
+  #### 新建vma，建立rmap的过程
+  通过用户程序通过mmap新建一个vma并主动或被动触发物理页面填充的过程来分析新建vma时rmap的建立细节。
+  
+  ##### 4K匿名页场景
+  
+  4K匿名页面实际填充的流程主要位于`do_anonymous_page`。但是，某些场景并不会填充物理页面，以zero_page填充，此时便不会为其建立ramp，因为没必要啊（并无实际物理页面）！
+  
+  + `do_anonymous_page->anon_vma_prepare`会为该vma分配对应的AVC以及对应的AV（也可能是找到一个可复用的AV，`find_mergeable_anon_vma`，这种情况**还不理解**暂不考虑），并作必要的初始化与关联操作：
+  1. `anon_vma_chain_alloc`分配AVC
+  2. `anon_vma_alloc`分配AV，并对其初始化：
+  ![2925b5a9.png](:storage\\d946d84c-d8f0-457e-b91d-d385016268cf\\2925b5a9.png)
+  3. 通过`anon_vma_chain_link`等步骤，将三者关联起来：
+  ![b70a2e2d.png](:storage\\d946d84c-d8f0-457e-b91d-d385016268cf\\b70a2e2d.png)
+  
+  + `do_anonymous_page->page_add_new_anon_rmap`将建立此映射的rmap关系：
+  ![7c302c7a.png](:storage\\d946d84c-d8f0-457e-b91d-d385016268cf\\7c302c7a.png)
+  
+  如果该VMA中有更多的物理页面被填充映射，则会像下图所示：
+  ![325fe7a0.png](:storage\\d946d84c-d8f0-457e-b91d-d385016268cf\\325fe7a0.png)
+  
+  ##### hugetlb场景
+  
+  #### fork时rmap的变化
+  
+  **线程**与进程共享地址空间，因此rmap是同一套。此处关注**子进程**，在fork时将复制一份**父进程**的地址空间，但其中也有很多细节性处理。以地址空间中存在2个vma为例，起始状态如下：
+  ![b03b90da.png](:storage\\d946d84c-d8f0-457e-b91d-d385016268cf\\b03b90da.png)
+  复制地址空间主要是在`dup_mmap`中进行的，核心逻辑是遍历父进程的每一个vma，然后逐个进行复制处理，具体步骤如下。
+  1. 如果vma有`VM_DONTCOPY`标志，意味着该vma不能被子进程复制，直接跳过
+  2. 通过`vm_area_dup`拷贝vma，但是anon_vma_chain会重置
+  
+  ![6c056d5e.png](:storage\\d946d84c-d8f0-457e-b91d-d385016268cf\\6c056d5e.png)
+  
+  3. 将新vma指向新mm，然后通过`anon_vma_fork`复制rmap关系（**注**:如果vma有`VM_WIPEONFORK`标志，则其rmap关系将不会被复制继承、而是完全重头来过，此处暂不考虑此场景）：
+  ![4de068a7.png](:storage\\d946d84c-d8f0-457e-b91d-d385016268cf\\4de068a7.png)
+  可以看到`VMA1'`有两个AVC：AVCa和AVCb，其中AVCa是由`anon_vma_fork->anon_vma_clone`创建出来的，rmap可以通过它来找到某页面在子进程中的映射；而AVCb是由于没有发生**AV reuse**情况下创建的，未来子进程中如果发生物理页面填充，则page->mapping可关联至AVCb对应的AV上。
+  
+'''
+linesHighlighted: []
+isStarred: false
+isTrashed: false
