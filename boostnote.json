@@ -4,6 +4,16 @@
       "key": "d46437f1ddb58b8126d2",
       "color": "#E10051",
       "name": "kernel"
+    },
+    {
+      "key": "a90a23ae635b7cc0e3dc",
+      "color": "#3FD941",
+      "name": "security"
+    },
+    {
+      "key": "9187c7bb7785559564b4",
+      "color": "#E8D252",
+      "name": "qemu"
     }
   ],
   "version": "1.0"

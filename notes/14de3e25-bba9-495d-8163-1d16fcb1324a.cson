@@ -1,0 +1,57 @@
+createdAt: "2020-11-08T10:17:47.191Z"
+updatedAt: "2020-11-08T11:29:02.682Z"
+type: "MARKDOWN_NOTE"
+folder: "a90a23ae635b7cc0e3dc"
+title: "SGX spec阅读"
+content: '''
+  ## SGX spec阅读
+  
+  ### 36.3 Enclave Life Cycle
+  
+  Enclave内存管理分成两个部分：
+  - address space allocation
+    说明在线性地址空间中，哪部分空间归Enclave拥有，此空间叫做“ELRANGE”。此时并不会分配真实的资源。
+  - memory commitment
+    分配真实的内存资源。
+    
+  
+  通常使用Intel SGX提供的EENTER指令将控制权传递给存储在Enclave Page Cache（EPC）中的enclave code，后者通过EEXIT指令将控制权返还给调用者。
+  
+  
+  SGX2支持：
+  - 在enclave运行期间，为enclave添加内存资源
+  - 为enclave添加线程资源
+  
+  ### 36.4 Data Structures And Enclave Operation
+  
+  有两个关键的数据结构：
+  - SGX Enclave Control Structure（SECS）
+    每个enclave一个，包含该enclave的meta-data，只能又硬件访问、软件不能**直接**访问。
+  - Thread Control Structure（TCS）
+    每个enclave包含一个或多个TCS。TCS包含enclave进入/退出时硬件来保存或恢复线程特定信息的meta-data。
+    
+  ### 36.5 Enclave Page Cache
+  
+  
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+'''
+tags: [
+  "sgx"
+]
+isStarred: false
+isTrashed: false

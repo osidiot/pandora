@@ -1,0 +1,97 @@
+createdAt: "2021-01-02T11:26:05.840Z"
+updatedAt: "2021-01-02T12:08:03.100Z"
+type: "MARKDOWN_NOTE"
+folder: "9187c7bb7785559564b4"
+title: "msix-notify调用栈"
+content: '''
+  msix-notify调用栈
+  
+  (gdb) bt
+  #0  0x000055555585c67e in memory_region_dispatch_write (mr=0x5555567f24c0, addr=20480, data=34, op=MO_32, attrs=...)
+      at /root/Work/qemu-5.0.0/memory.c:1461
+  #1  0x00005555557fcb60 in address_space_stl_internal (as=0x555557198c20, addr=4276113408, val=34, attrs=..., result=0x0, endian=
+      DEVICE_LITTLE_ENDIAN) at /root/Work/qemu-5.0.0/memory_ldst.inc.c:315
+  #2  0x00005555557fcc9b in address_space_stl_le (as=0x555557198c20, addr=4276113408, val=34, attrs=..., result=0x0)
+      at /root/Work/qemu-5.0.0/memory_ldst.inc.c:353
+  #3  0x0000555555b4b5b2 in msi_send_message (dev=0x555557198a00, msg=...) at hw/pci/msi.c:340
+  #4  0x0000555555b4a106 in msix_notify (dev=0x555557198a00, vector=1) at hw/pci/msix.c:493
+  #5  0x0000555555bec04a in virtio_pci_notify (d=0x555557198a00, vector=1) at hw/virtio/virtio-pci.c:71
+  #6  0x00005555558f1155 in virtio_notify_vector (vdev=0x5555571a0b90, vector=1) at /root/Work/qemu-5.0.0/hw/virtio/virtio.c:1909
+  #7  0x00005555558f2fe4 in virtio_irq (vq=0x7ffde4156010) at /root/Work/qemu-5.0.0/hw/virtio/virtio.c:2558
+  #8  0x00005555558f3085 in virtio_notify (vdev=0x5555571a0b90, vq=0x7ffde4156010) at /root/Work/qemu-5.0.0/hw/virtio/virtio.c:2570
+  #9  0x00005555558c3c44 in virtio_net_receive_rcu (nc=0x5555571b4620, buf=0x555556ee9278 "33\\377\\006\\346T\\232U\\002\\006\\346T\\206\\335`", size=86) at /root/Work/qemu-5.0.0/hw/net/virtio-net.c:1489
+  #10 0x00005555558c3cad in virtio_net_do_receive (nc=0x5555571b4620, buf=0x555556ee9278 "33\\377\\006\\346T\\232U\\002\\006\\346T\\206\\335`", size=86) at /root/Work/qemu-5.0.0/hw/net/virtio-net.c:1499
+  #11 0x00005555558c544b in virtio_net_receive (nc=0x5555571b4620, buf=0x555556ee9278 "33\\377\\006\\346T\\232U\\002\\006\\346T\\206\\335`", size=86) at /root/Work/qemu-5.0.0/hw/net/virtio-net.c:2104
+  #12 0x0000555555c2ce49 in nc_sendv_compat (nc=0x5555571b4620, iov=0x7fffffffd8e0, iovcnt=1, flags=0) at net/net.c:700
+  #13 0x0000555555c2cf0b in qemu_deliver_packet_iov (sender=0x5555567b2520, flags=0, iov=0x7fffffffd8e0, iovcnt=1, opaque=0x5555571b4620) at net/net.c:728
+  #14 0x0000555555c2f8ce in qemu_net_queue_deliver_iov (queue=0x5555571b4830, sender=0x5555567b2520, flags=0, iov=0x7fffffffd8e0, iovcnt=1) at net/queue.c:179
+  #15 0x0000555555c2fa3d in qemu_net_queue_send_iov (queue=0x5555571b4830, sender=0x5555567b2520, flags=0, iov=0x7fffffffd8e0, iovcnt=1, sent_cb=0x0) at net/queue.c:224
+  #16 0x0000555555c2d04a in qemu_sendv_packet_async (sender=0x5555567b2520, iov=0x7fffffffd8e0, iovcnt=1, sent_cb=0x0)
+      at net/net.c:769
+  #17 0x0000555555c2d077 in qemu_sendv_packet (nc=0x5555567b2520, iov=0x7fffffffd8e0, iovcnt=1) at net/net.c:777
+  #18 0x0000555555c30483 in net_hub_receive_iov (hub=0x5555567b1f90, source_port=0x5555567b2150, iov=0x7fffffffd8e0, iovcnt=1)
+      at net/hub.c:74
+  #19 0x0000555555c30682 in net_hub_port_receive_iov (nc=0x5555567b2150, iov=0x7fffffffd8e0, iovcnt=1) at net/hub.c:125
+  #20 0x0000555555c2cef0 in qemu_deliver_packet_iov (sender=0x5555567bb250, flags=0, iov=0x7fffffffd8e0, iovcnt=1, opaque=0x5555567b2150) at net/net.c:726
+  #21 0x0000555555c2f84d in qemu_net_queue_deliver (queue=0x5555567b2310, sender=0x5555567bb250, flags=0, data=0x555556ee9278 "33\\377\\006\\346T\\232U\\002\\006\\346T\\206\\335`", size=86) at net/queue.c:164
+  #22 0x0000555555c2fc41 in qemu_net_queue_flush (queue=0x5555567b2310) at net/queue.c:261
+  #23 0x0000555555c30e2c in net_hub_flush (nc=0x5555567b2520) at net/hub.c:341
+  #24 0x0000555555c2cb58 in qemu_flush_or_purge_queued_packets (nc=0x5555571b4620, purge=false) at net/net.c:602
+  ---Type <return> to continue, or q <return> to quit---
+  #25 0x0000555555c2cbb8 in qemu_flush_queued_packets (nc=0x5555571b4620) at net/net.c:619
+  #26 0x00005555558c30b1 in virtio_net_handle_rx (vdev=0x5555571a0b90, vq=0x7ffde4156010)
+      at /root/Work/qemu-5.0.0/hw/net/virtio-net.c:1234
+  #27 0x00005555558f25be in virtio_queue_notify_vq (vq=0x7ffde4156010) at /root/Work/qemu-5.0.0/hw/virtio/virtio.c:2344
+  #28 0x00005555558f57d5 in virtio_queue_host_notifier_read (n=0x7ffde4156088) at /root/Work/qemu-5.0.0/hw/virtio/virtio.c:3543
+  #29 0x0000555555dedb76 in aio_dispatch_handler (ctx=0x5555565c1a10, node=0x7ffdd8959670) at util/aio-posix.c:328
+  #30 0x0000555555dedd2f in aio_dispatch_handlers (ctx=0x5555565c1a10) at util/aio-posix.c:371
+  #31 0x0000555555dedd85 in aio_dispatch (ctx=0x5555565c1a10) at util/aio-posix.c:381
+  #32 0x0000555555de8d1b in aio_ctx_dispatch (source=0x5555565c1a10, callback=0x0, user_data=0x0) at util/async.c:306
+  #33 0x00007ffff7521099 in g_main_context_dispatch () at /lib64/libglib-2.0.so.0
+  #34 0x0000555555dec317 in glib_pollfds_poll () at util/main-loop.c:219
+  #35 0x0000555555dec390 in os_host_main_loop_wait (timeout=804000000) at util/main-loop.c:242
+  #36 0x0000555555dec496 in main_loop_wait (nonblocking=0) at util/main-loop.c:518
+  #37 0x0000555555950176 in qemu_main_loop () at /root/Work/qemu-5.0.0/softmmu/vl.c:1664
+  #38 0x0000555555d8af50 in main (argc=47, argv=0x7fffffffdd98, envp=0x7fffffffdf18) at /root/Work/qemu-5.0.0/softmmu/main.c:49
+  
+  
+  
+  virtio-pci:
+  (gdb) p dev->msix_exclusive_bar
+  Python Exception <class 'gdb.error'> There is no member named keys.: 
+  $9 = {parent_obj = {class = 0x5555565d8160, free = 0x0, properties = 0x5555571ac2a0, ref = 1, parent = 0x555557198a00}, 
+    romd_mode = true, ram = false, subpage = false, readonly = false, nonvolatile = false, rom_device = false, 
+    flush_coalesced_mmio = false, global_locking = true, dirty_log_mask = 0 '\\000', is_iommu = false, ram_block = 0x0, 
+    owner = 0x555557198a00, ops = 0x5555562e7ac0 <unassigned_mem_ops>, opaque = 0x0, container = 0x55555692cc70, 
+    size = 0x00000000000000000000000000001000, addr = 4273799168, destructor = 0x55555585b928 <memory_region_destructor_none>, 
+    align = 0, terminates = false, ram_device = false, enabled = true, warning_printed = false, vga_logging_count = 0 '\\000', 
+    alias = 0x0, alias_offset = 0, priority = 1, subregions = {tqh_first = 0x555557199090, tqh_circ = {tql_next = 0x555557199090, 
+        tql_prev = 0x555557199058}}, subregions_link = {tqe_next = 0x555557630d30, tqe_circ = {tql_next = 0x555557630d30, 
+        tql_prev = 0x555557199998}}, coalesced = {tqh_first = 0x0, tqh_circ = {tql_next = 0x0, tql_prev = 0x555557198f78}}, 
+    name = 0x555557239ad0 "virtio-net-pci-msix", ioeventfd_nb = 0, ioeventfds = 0x0}
+    
+  
+  enclave:
+  (gdb) p enclave->pdev.msix_exclusive_bar
+  Python Exception <class 'gdb.error'> There is no member named keys.: 
+  $2 = {parent_obj = {class = 0x5555565d8160, free = 0x0, properties = 0x5555577fc580, ref = 1, parent = 0x555557859bf0}, 
+    romd_mode = true, ram = false, subpage = false, readonly = false, nonvolatile = false, rom_device = false, 
+    flush_coalesced_mmio = false, global_locking = true, dirty_log_mask = 0 '\\000', is_iommu = false, ram_block = 0x0, 
+    owner = 0x555557859bf0, ops = 0x5555562e7ac0 <unassigned_mem_ops>, opaque = 0x0, container = 0x55555692cc70, 
+    size = 0x00000000000000000000000000001000, addr = 4273811456, destructor = 0x55555585b928 <memory_region_destructor_none>, 
+    align = 0, terminates = false, ram_device = false, enabled = true, warning_printed = false, vga_logging_count = 0 '\\000', 
+    alias = 0x0, alias_offset = 0, priority = 1, subregions = {tqh_first = 0x55555785a280, tqh_circ = {
+        tql_next = 0x55555785a280, tql_prev = 0x55555785a248}}, subregions_link = {tqe_next = 0x5555574d6ea0, tqe_circ = {
+        tql_next = 0x5555574d6ea0, tql_prev = 0x55555785a598}}, coalesced = {tqh_first = 0x0, tqh_circ = {tql_next = 0x0, 
+        tql_prev = 0x55555785a168}}, name = 0x55555785c020 "enclave-msix", ioeventfd_nb = 0, ioeventfds = 0x0}
+    
+    
+    debug cmd:
+    handle SIGUSR1 nostop noprint pass
+    set args -name guest=ubuntu,debug-threads=on -machine pc-i440fx-5.0,accel=kvm,usb=off -m 8192 -realtime mlock=off -smp 8,sockets=2,cores=4,threads=1 -numa node,nodeid=0,cpus=0-3,mem=4096 -numa node,nodeid=1,cpus=4-7,mem=4096 -uuid eef9fcb4-ec77-4068-844c-e5947a9730cc -no-user-config -nodefaults -rtc base=localtime,driftfix=slew -global kvm-pit.lost_tick_policy=discard -boot menu=on,strict=on -drive file=/root/Work/vms/ubuntu.raw,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,scsi=off,bus=pci.0,addr=0x5,drive=drive-virtio-disk0,id=virtio-disk0,bootindex=1 -chardev pty,id=charserial0 -device isa-serial,chardev=charserial0,id=serial0 -vnc 0.0.0.0:0 -device cirrus-vga,id=video0,bus=pci.0,addr=0x3 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4 -net tap -net nic,model=virtio -msg timestamp=on -device enclave
+  
+  
+'''
+tags: []
+isStarred: false
+isTrashed: false
