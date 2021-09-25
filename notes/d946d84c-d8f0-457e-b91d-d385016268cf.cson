@@ -1,7 +1,7 @@
 createdAt: "2021-03-07T06:51:04.354Z"
-updatedAt: "2021-03-07T14:37:49.201Z"
+updatedAt: "2021-09-25T02:55:50.208Z"
 type: "MARKDOWN_NOTE"
-folder: "d46437f1ddb58b8126d2"
+folder: "3b6489ec62f0e20e4059"
 title: "内核Rmap分析——rmap建立过程"
 tags: []
 content: '''

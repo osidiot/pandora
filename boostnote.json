@@ -3,7 +3,7 @@
     {
       "key": "d46437f1ddb58b8126d2",
       "color": "#E10051",
-      "name": "kernel"
+      "name": "sched"
     },
     {
       "key": "a90a23ae635b7cc0e3dc",
@@ -13,7 +13,17 @@
     {
       "key": "9187c7bb7785559564b4",
       "color": "#E8D252",
-      "name": "qemu"
+      "name": "qemu/kvm"
+    },
+    {
+      "key": "3b6489ec62f0e20e4059",
+      "color": "#2BA5F7",
+      "name": "mm"
+    },
+    {
+      "key": "68c91ed1b2b7d19c2afb",
+      "color": "#2BA5F7",
+      "name": "virtio"
     }
   ],
   "version": "1.0"
